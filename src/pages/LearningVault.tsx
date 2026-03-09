@@ -7,11 +7,7 @@ import { Input } from "@/components/ui/input";
 import { LoadingState, EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -52,6 +48,18 @@ const LearningVault = () => {
   useEffect(() => {
     if (!user) return;
     loadItems();
+
+    // Realtime subscription
+    const channel = supabase
+      .channel("learning-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "learning_items", filter: `user_id=eq.${user.id}` },
+        () => { loadItems(); }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [user]);
 
   const loadItems = async () => {
@@ -62,13 +70,8 @@ const LearningVault = () => {
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
 
-    if (!itemsData) {
-      setItems([]);
-      setLoading(false);
-      return;
-    }
+    if (!itemsData) { setItems([]); setLoading(false); return; }
 
-    // Load files for each item
     const itemIds = itemsData.map((i) => i.id);
     const { data: filesData } = await supabase
       .from("learning_files")
@@ -90,16 +93,12 @@ const LearningVault = () => {
 
     const { error: uploadError } = await supabase.storage
       .from("learning-files")
-      .upload(filePath, file);
+      .upload(filePath, file, {
+        upsert: false,
+        contentType: file.type,
+      });
 
-    if (uploadError) {
-      console.error("Upload error:", uploadError);
-      return null;
-    }
-
-    const { data: urlData } = supabase.storage
-      .from("learning-files")
-      .getPublicUrl(filePath);
+    if (uploadError) { console.error("Upload error:", uploadError); return null; }
 
     const { data: fileRecord, error: dbError } = await supabase
       .from("learning_files")
@@ -113,11 +112,7 @@ const LearningVault = () => {
       .select()
       .single();
 
-    if (dbError) {
-      console.error("DB error:", dbError);
-      return null;
-    }
-
+    if (dbError) { console.error("DB error:", dbError); return null; }
     return fileRecord;
   };
 
@@ -144,7 +139,6 @@ const LearningVault = () => {
       return;
     }
 
-    // Upload pending files
     let uploadFailed = false;
     for (const file of pendingFiles) {
       const result = await uploadFile(file, newItem.id);
@@ -157,19 +151,13 @@ const LearningVault = () => {
       toast({ title: "Saved to vault" });
     }
 
-    setTitle("");
-    setContent("");
-    setCategory("");
-    setTags("");
-    setPendingFiles([]);
-    setDialogOpen(false);
-    loadItems();
-    setSaving(false);
+    setTitle(""); setContent(""); setCategory(""); setTags("");
+    setPendingFiles([]); setDialogOpen(false); setSaving(false);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    const maxSize = 20 * 1024 * 1024; // 20MB
+    const maxSize = 20 * 1024 * 1024;
     const valid = files.filter((f) => {
       if (f.size > maxSize) {
         toast({ variant: "destructive", title: "File too large", description: `${f.name} exceeds 20MB limit.` });
@@ -181,25 +169,14 @@ const LearningVault = () => {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const removePendingFile = (index: number) => {
-    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
-  };
+  const removePendingFile = (index: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== index));
 
   const downloadFile = async (file: LearningFile) => {
-    const { data, error } = await supabase.storage
-      .from("learning-files")
-      .download(file.file_url);
-
-    if (error || !data) {
-      toast({ variant: "destructive", title: "Error", description: "Failed to download file." });
-      return;
-    }
-
+    const { data, error } = await supabase.storage.from("learning-files").download(file.file_url);
+    if (error || !data) { toast({ variant: "destructive", title: "Error", description: "Failed to download file." }); return; }
     const url = URL.createObjectURL(data);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = file.file_name;
-    a.click();
+    a.href = url; a.download = file.file_name; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -210,10 +187,7 @@ const LearningVault = () => {
   };
 
   const filtered = items.filter(
-    (i) =>
-      !search ||
-      i.title.toLowerCase().includes(search.toLowerCase()) ||
-      i.content.toLowerCase().includes(search.toLowerCase())
+    (i) => !search || i.title.toLowerCase().includes(search.toLowerCase()) || i.content.toLowerCase().includes(search.toLowerCase())
   );
 
   if (loading) return <LoadingState message="Loading vault..." />;
@@ -227,94 +201,49 @@ const LearningVault = () => {
         </div>
         <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setPendingFiles([]); }}>
           <DialogTrigger asChild>
-            <Button variant="hero" size="sm" className="gap-1.5">
-              <Plus className="h-4 w-4" /> Add Note
-            </Button>
+            <Button variant="hero" size="sm" className="gap-1.5"><Plus className="h-4 w-4" /> Add Note</Button>
           </DialogTrigger>
           <DialogContent className="max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>New Learning Note</DialogTitle>
-            </DialogHeader>
+            <DialogHeader><DialogTitle>New Learning Note</DialogTitle></DialogHeader>
             <div className="space-y-4">
               <div>
                 <Label>Title</Label>
-                <Input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="What did you learn?"
-                  className="mt-1.5"
-                />
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What did you learn?" className="mt-1.5" />
               </div>
               <div>
                 <Label>Content</Label>
-                <Textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Details, notes, summaries..."
-                  className="mt-1.5"
-                  rows={5}
-                />
+                <Textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Details, notes, summaries..." className="mt-1.5" rows={5} />
               </div>
               <div>
                 <Label>Category</Label>
-                <Input
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  placeholder="e.g., programming, science"
-                  className="mt-1.5"
-                />
+                <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g., programming, science" className="mt-1.5" />
               </div>
               <div>
                 <Label>Tags (comma-separated)</Label>
-                <Input
-                  value={tags}
-                  onChange={(e) => setTags(e.target.value)}
-                  placeholder="react, typescript"
-                  className="mt-1.5"
-                />
+                <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="react, typescript" className="mt-1.5" />
               </div>
-
-              {/* File upload */}
               <div>
                 <Label>Attachments</Label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border bg-muted/50 px-4 py-6 text-sm text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-                >
-                  <Upload className="h-5 w-5" />
-                  <span>Click to attach files (max 20MB each)</span>
+                <input ref={fileInputRef} type="file" multiple onChange={handleFileSelect} className="hidden" />
+                <button type="button" onClick={() => fileInputRef.current?.click()}
+                  className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border bg-muted/50 px-4 py-6 text-sm text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground">
+                  <Upload className="h-5 w-5" /><span>Click to attach files (max 20MB each)</span>
                 </button>
-
                 {pendingFiles.length > 0 && (
                   <div className="mt-3 space-y-2">
                     {pendingFiles.map((file, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm"
-                      >
+                      <div key={i} className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
                         <Paperclip className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                         <span className="truncate flex-1 text-foreground">{file.name}</span>
                         <span className="text-xs text-muted-foreground shrink-0">{formatFileSize(file)}</span>
-                        <button onClick={() => removePendingFile(i)} className="text-muted-foreground hover:text-destructive shrink-0">
-                          <X className="h-3.5 w-3.5" />
-                        </button>
+                        <button onClick={() => removePendingFile(i)} className="text-muted-foreground hover:text-destructive shrink-0"><X className="h-3.5 w-3.5" /></button>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-
               <Button variant="hero" className="w-full" onClick={saveItem} disabled={saving || !title.trim()}>
-                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Save to Vault
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Save to Vault
               </Button>
             </div>
           </DialogContent>
@@ -323,59 +252,31 @@ const LearningVault = () => {
 
       <div className="relative mb-6">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search vault..."
-          className="pl-9"
-        />
+        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search vault..." className="pl-9" />
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState
-          icon={BookOpen}
-          title="Vault is empty"
-          description="Start saving notes, summaries, and learnings."
-        />
+        <EmptyState icon={BookOpen} title="Vault is empty" description="Start saving notes, summaries, and learnings." />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {filtered.map((item) => (
-            <div
-              key={item.id}
-              className="rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/30"
-            >
+            <div key={item.id} className="rounded-xl border border-border bg-card p-4 transition-all hover:border-primary/30">
               <div className="flex items-start gap-3">
-                <div className="rounded-lg bg-primary/10 p-2">
-                  <FileText className="h-4 w-4 text-primary" />
-                </div>
+                <div className="rounded-lg bg-primary/10 p-2"><FileText className="h-4 w-4 text-primary" /></div>
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold text-foreground text-sm truncate">{item.title}</h3>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {item.category} • {new Date(item.created_at).toLocaleDateString()}
-                  </p>
-                  {item.content && (
-                    <p className="text-sm text-muted-foreground mt-2 line-clamp-3">{item.content}</p>
-                  )}
+                  <p className="text-xs text-muted-foreground mt-0.5">{item.category} • {new Date(item.created_at).toLocaleDateString()}</p>
+                  {item.content && <p className="text-sm text-muted-foreground mt-2 line-clamp-3">{item.content}</p>}
                   {item.tags && item.tags.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {item.tags.map((tag) => (
-                        <span key={tag} className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                          {tag}
-                        </span>
-                      ))}
+                      {item.tags.map((tag) => (<span key={tag} className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{tag}</span>))}
                     </div>
                   )}
-                  {/* Attached files */}
                   {item.files && item.files.length > 0 && (
                     <div className="mt-2 space-y-1">
                       {item.files.map((file) => (
-                        <button
-                          key={file.id}
-                          onClick={() => downloadFile(file)}
-                          className="flex items-center gap-1.5 text-xs text-primary hover:underline"
-                        >
-                          <Download className="h-3 w-3" />
-                          {file.file_name}
+                        <button key={file.id} onClick={() => downloadFile(file)} className="flex items-center gap-1.5 text-xs text-primary hover:underline">
+                          <Download className="h-3 w-3" />{file.file_name}
                         </button>
                       ))}
                     </div>
