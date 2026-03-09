@@ -65,7 +65,7 @@ const Chat = () => {
         .select("*")
         .eq("conversation_id", currentConvId)
         .order("created_at", { ascending: true });
-      setMessages(data || []);
+      setMessages((data || []).map((m) => ({ ...m, role: m.role as "user" | "assistant" })));
     };
     load();
   }, [currentConvId]);
