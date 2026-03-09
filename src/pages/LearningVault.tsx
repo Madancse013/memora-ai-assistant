@@ -134,7 +134,12 @@ const LearningVault = () => {
       .single();
 
     if (error || !newItem) {
-      toast({ variant: "destructive", title: "Error", description: error?.message || "Failed to save" });
+      const isDuplicate = error?.message?.includes("idx_learning_items_no_dup") || error?.code === "23505";
+      toast({
+        variant: "destructive",
+        title: isDuplicate ? "Duplicate Entry" : "Error",
+        description: isDuplicate ? "A note with this title and category already exists." : (error?.message || "Failed to save"),
+      });
       setSaving(false);
       return;
     }
