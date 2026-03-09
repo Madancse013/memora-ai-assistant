@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { LoadingState, EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
+import { callGeminiAPI } from "@/integrations/gemini/index";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
@@ -98,11 +99,7 @@ const DecisionAssistant = () => {
   const analyzeDecision = async (decision: Decision) => {
     setAnalyzing(decision.id);
     try {
-      const { data, error } = await supabase.functions.invoke("chat", {
-        body: {
-          messages: [{
-            role: "user",
-            content: `Analyze this decision and provide a structured risk assessment. You MUST respond in this exact JSON format (no markdown, no code fences, just raw JSON):
+      const analysisPrompt = `Analyze this decision and provide a structured risk assessment. You MUST respond in this exact JSON format (no markdown, no code fences, just raw JSON):
 
 {
   "recommendation": "Your detailed recommendation text here using markdown formatting",
@@ -115,13 +112,12 @@ Decision: ${decision.title}
 Context: ${decision.description}
 Options: ${JSON.stringify(decision.options)}
 
-Provide a thorough analysis with clear pros, cons, and a risk score from 1 (very safe) to 10 (very risky).`,
-          }],
-        },
-      });
-      if (error) throw error;
+Provide a thorough analysis with clear pros, cons, and a risk score from 1 (very safe) to 10 (very risky).`;
 
-      const rawContent = data?.choices?.[0]?.message?.content || "";
+      const rawContent = await callGeminiAPI([{
+        role: "user",
+        content: analysisPrompt,
+      }]);
 
       let parsed: any = null;
       try {

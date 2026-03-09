@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LoadingState, EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
+import { callGeminiAPI } from "@/integrations/gemini/index";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
@@ -85,20 +86,15 @@ const HabitLoop = () => {
     if (!name.trim()) return;
     setClassifying(true);
     try {
-      const { data, error } = await supabase.functions.invoke("chat", {
-        body: {
-          messages: [{
-            role: "user",
-            content: `Classify this habit into exactly one category. Reply with ONLY the category keyword, nothing else.\n\nCategories: health, learning, productivity, mindfulness, social, creative, general\n\nHabit: "${name}"`,
-          }],
-        },
-      });
-      if (!error && data?.choices?.[0]?.message?.content) {
-        const classified = data.choices[0].message.content.trim().toLowerCase();
-        const validCategories = HABIT_CATEGORIES.map(c => c.value);
-        if (validCategories.includes(classified)) {
-          setAiCategory(classified);
-        }
+      const result = await callGeminiAPI([{
+        role: "user",
+        content: `Classify this habit into exactly one category. Reply with ONLY the category keyword, nothing else.\n\nCategories: health, learning, productivity, mindfulness, social, creative, general\n\nHabit: "${name}"`,
+      }]);
+      
+      const classified = result.trim().toLowerCase();
+      const validCategories = HABIT_CATEGORIES.map(c => c.value);
+      if (validCategories.includes(classified)) {
+        setAiCategory(classified);
       }
     } catch { /* ignore classification errors */ }
     setClassifying(false);
