@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { BookOpen, Search, Plus, Tag, FileText } from "lucide-react";
+import { BookOpen, Search, Plus, FileText, Upload, Paperclip, X, Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LoadingState, EmptyState } from "@/components/ui/states";
@@ -16,6 +16,13 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
+interface LearningFile {
+  id: string;
+  file_name: string;
+  file_url: string;
+  file_type: string | null;
+}
+
 interface LearningItem {
   id: string;
   title: string;
@@ -24,6 +31,7 @@ interface LearningItem {
   tags: string[];
   item_type: string;
   created_at: string;
+  files?: LearningFile[];
 }
 
 const LearningVault = () => {
@@ -38,6 +46,8 @@ const LearningVault = () => {
   const [category, setCategory] = useState("");
   const [tags, setTags] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -46,38 +56,157 @@ const LearningVault = () => {
 
   const loadItems = async () => {
     if (!user) return;
-    const { data } = await supabase
+    const { data: itemsData } = await supabase
       .from("learning_items")
       .select("*")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
-    setItems(data || []);
+
+    if (!itemsData) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    // Load files for each item
+    const itemIds = itemsData.map((i) => i.id);
+    const { data: filesData } = await supabase
+      .from("learning_files")
+      .select("*")
+      .in("learning_item_id", itemIds);
+
+    const itemsWithFiles: LearningItem[] = itemsData.map((item) => ({
+      ...item,
+      files: (filesData || []).filter((f) => f.learning_item_id === item.id),
+    }));
+
+    setItems(itemsWithFiles);
     setLoading(false);
+  };
+
+  const uploadFile = async (file: File, itemId: string): Promise<LearningFile | null> => {
+    if (!user) return null;
+    const filePath = `${user.id}/${itemId}/${Date.now()}_${file.name}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("learning-files")
+      .upload(filePath, file);
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError);
+      return null;
+    }
+
+    const { data: urlData } = supabase.storage
+      .from("learning-files")
+      .getPublicUrl(filePath);
+
+    const { data: fileRecord, error: dbError } = await supabase
+      .from("learning_files")
+      .insert({
+        learning_item_id: itemId,
+        user_id: user.id,
+        file_name: file.name,
+        file_url: filePath,
+        file_type: file.type || null,
+      })
+      .select()
+      .single();
+
+    if (dbError) {
+      console.error("DB error:", dbError);
+      return null;
+    }
+
+    return fileRecord;
   };
 
   const saveItem = async () => {
     if (!user || !title.trim()) return;
     setSaving(true);
-    const { error } = await supabase.from("learning_items").insert({
-      user_id: user.id,
-      title: title.trim(),
-      content: content.trim(),
-      category: category.trim() || "general",
-      tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
-      item_type: "note",
-    });
-    if (error) {
-      toast({ variant: "destructive", title: "Error", description: error.message });
+
+    const { data: newItem, error } = await supabase
+      .from("learning_items")
+      .insert({
+        user_id: user.id,
+        title: title.trim(),
+        content: content.trim(),
+        category: category.trim() || "general",
+        tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+        item_type: pendingFiles.length > 0 ? "note+files" : "note",
+      })
+      .select()
+      .single();
+
+    if (error || !newItem) {
+      toast({ variant: "destructive", title: "Error", description: error?.message || "Failed to save" });
+      setSaving(false);
+      return;
+    }
+
+    // Upload pending files
+    let uploadFailed = false;
+    for (const file of pendingFiles) {
+      const result = await uploadFile(file, newItem.id);
+      if (!result) uploadFailed = true;
+    }
+
+    if (uploadFailed) {
+      toast({ title: "Saved with warnings", description: "Some files failed to upload." });
     } else {
       toast({ title: "Saved to vault" });
-      setTitle("");
-      setContent("");
-      setCategory("");
-      setTags("");
-      setDialogOpen(false);
-      loadItems();
     }
+
+    setTitle("");
+    setContent("");
+    setCategory("");
+    setTags("");
+    setPendingFiles([]);
+    setDialogOpen(false);
+    loadItems();
     setSaving(false);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    const maxSize = 20 * 1024 * 1024; // 20MB
+    const valid = files.filter((f) => {
+      if (f.size > maxSize) {
+        toast({ variant: "destructive", title: "File too large", description: `${f.name} exceeds 20MB limit.` });
+        return false;
+      }
+      return true;
+    });
+    setPendingFiles((prev) => [...prev, ...valid]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removePendingFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const downloadFile = async (file: LearningFile) => {
+    const { data, error } = await supabase.storage
+      .from("learning-files")
+      .download(file.file_url);
+
+    if (error || !data) {
+      toast({ variant: "destructive", title: "Error", description: "Failed to download file." });
+      return;
+    }
+
+    const url = URL.createObjectURL(data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file.file_name;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatFileSize = (file: File) => {
+    if (file.size < 1024) return `${file.size} B`;
+    if (file.size < 1024 * 1024) return `${(file.size / 1024).toFixed(1)} KB`;
+    return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   const filtered = items.filter(
@@ -96,13 +225,13 @@ const LearningVault = () => {
           <h1 className="text-2xl font-bold">Learning Vault</h1>
           <p className="text-sm text-muted-foreground">Your knowledge repository</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setPendingFiles([]); }}>
           <DialogTrigger asChild>
             <Button variant="hero" size="sm" className="gap-1.5">
               <Plus className="h-4 w-4" /> Add Note
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>New Learning Note</DialogTitle>
             </DialogHeader>
@@ -144,7 +273,47 @@ const LearningVault = () => {
                   className="mt-1.5"
                 />
               </div>
+
+              {/* File upload */}
+              <div>
+                <Label>Attachments</Label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border bg-muted/50 px-4 py-6 text-sm text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <Upload className="h-5 w-5" />
+                  <span>Click to attach files (max 20MB each)</span>
+                </button>
+
+                {pendingFiles.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {pendingFiles.map((file, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm"
+                      >
+                        <Paperclip className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="truncate flex-1 text-foreground">{file.name}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">{formatFileSize(file)}</span>
+                        <button onClick={() => removePendingFile(i)} className="text-muted-foreground hover:text-destructive shrink-0">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <Button variant="hero" className="w-full" onClick={saveItem} disabled={saving || !title.trim()}>
+                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save to Vault
               </Button>
             </div>
@@ -193,6 +362,21 @@ const LearningVault = () => {
                         <span key={tag} className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           {tag}
                         </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* Attached files */}
+                  {item.files && item.files.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {item.files.map((file) => (
+                        <button
+                          key={file.id}
+                          onClick={() => downloadFile(file)}
+                          className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+                        >
+                          <Download className="h-3 w-3" />
+                          {file.file_name}
+                        </button>
                       ))}
                     </div>
                   )}
