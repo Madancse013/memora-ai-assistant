@@ -145,7 +145,7 @@ const Chat = () => {
         .single();
 
       if (aiMsg) {
-        setMessages((prev) => [...prev, aiMsg]);
+        setMessages((prev) => [...prev, { ...aiMsg, role: aiMsg.role as "user" | "assistant" }]);
       }
     } catch (error: any) {
       toast({
