@@ -46,6 +46,7 @@ const VoiceAI = () => {
   const sendTranscript = async () => {
     if (!transcript.trim() || !user) return;
     setLoading(true);
+    const startTime = Date.now();
     try {
       const { data, error } = await supabase.functions.invoke("chat", {
         body: {
@@ -55,6 +56,15 @@ const VoiceAI = () => {
       if (error) throw error;
       const aiResponse = data?.choices?.[0]?.message?.content || "No response.";
       setResponse(aiResponse);
+
+      // Save voice session to database
+      const durationMs = Date.now() - startTime;
+      await supabase.from("voice_sessions").insert({
+        user_id: user.id,
+        transcript: transcript.trim(),
+        ai_response: aiResponse,
+        duration_ms: durationMs,
+      });
 
       // Optional TTS
       if ("speechSynthesis" in window) {

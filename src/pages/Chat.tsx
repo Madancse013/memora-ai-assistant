@@ -3,8 +3,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Send, Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { EmptyState, ErrorState } from "@/components/ui/states";
+import { EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
+import ReactMarkdown from "react-markdown";
 
 interface Message {
   id: string;
@@ -72,7 +73,7 @@ const Chat = () => {
 
   const createConversation = async () => {
     if (!user) return;
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("conversations")
       .insert({ user_id: user.id, title: "New Chat" })
       .select()
@@ -122,7 +123,6 @@ const Chat = () => {
     setIsLoading(true);
 
     try {
-      // Call AI via edge function
       const allMessages = [...messages, { role: "user" as const, content: userMessage }];
       const { data: aiData, error: aiError } = await supabase.functions.invoke("chat", {
         body: { messages: allMessages.map((m) => ({ role: m.role, content: m.content })) },
@@ -132,7 +132,6 @@ const Chat = () => {
 
       const aiContent = aiData?.choices?.[0]?.message?.content || "I'm sorry, I couldn't generate a response. Please try again.";
 
-      // Save assistant message
       const { data: aiMsg } = await supabase
         .from("messages")
         .insert({
@@ -207,7 +206,13 @@ const Chat = () => {
                     : "bg-card border border-border text-foreground"
                 }`}
               >
-                {msg.content}
+                {msg.role === "assistant" ? (
+                  <div className="prose prose-sm prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  </div>
+                ) : (
+                  msg.content
+                )}
               </div>
             </div>
           ))}
