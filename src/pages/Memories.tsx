@@ -7,20 +7,12 @@ import { Input } from "@/components/ui/input";
 import { LoadingState, EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
 const CATEGORIES = ["personal", "work", "learning", "decision", "habit"];
@@ -49,6 +41,18 @@ const Memories = () => {
   useEffect(() => {
     if (!user) return;
     loadMemories();
+
+    // Realtime subscription
+    const channel = supabase
+      .channel("memories-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "memories", filter: `user_id=eq.${user.id}` },
+        () => { loadMemories(); }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [user]);
 
   const loadMemories = async () => {
@@ -78,7 +82,6 @@ const Memories = () => {
       setNewContent("");
       setNewTags("");
       setDialogOpen(false);
-      loadMemories();
     }
     setSaving(false);
   };
@@ -122,26 +125,17 @@ const Memories = () => {
               <div>
                 <Label>Category</Label>
                 <Select value={newCategory} onValueChange={setNewCategory}>
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c.charAt(0).toUpperCase() + c.slice(1)}
-                      </SelectItem>
+                      <SelectItem key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div>
                 <Label>Tags (comma-separated)</Label>
-                <Input
-                  value={newTags}
-                  onChange={(e) => setNewTags(e.target.value)}
-                  placeholder="tag1, tag2"
-                  className="mt-1.5"
-                />
+                <Input value={newTags} onChange={(e) => setNewTags(e.target.value)} placeholder="tag1, tag2" className="mt-1.5" />
               </div>
               <Button variant="hero" className="w-full" onClick={saveMemory} disabled={saving || !newContent.trim()}>
                 Save Memory
@@ -151,39 +145,24 @@ const Memories = () => {
         </Dialog>
       </div>
 
-      {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search memories..."
-            className="pl-9"
-          />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search memories..." className="pl-9" />
         </div>
         <Select value={filterCategory} onValueChange={setFilterCategory}>
-          <SelectTrigger className="w-full sm:w-40">
-            <SelectValue placeholder="Category" />
-          </SelectTrigger>
+          <SelectTrigger className="w-full sm:w-40"><SelectValue placeholder="Category" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Categories</SelectItem>
             {CATEGORIES.map((c) => (
-              <SelectItem key={c} value={c}>
-                {c.charAt(0).toUpperCase() + c.slice(1)}
-              </SelectItem>
+              <SelectItem key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
 
-      {/* Timeline */}
       {filtered.length === 0 ? (
-        <EmptyState
-          icon={Clock}
-          title="No memories yet"
-          description="Start saving memories to build your personal timeline."
-        />
+        <EmptyState icon={Clock} title="No memories yet" description="Start saving memories to build your personal timeline." />
       ) : (
         <div className="relative space-y-4">
           <div className="absolute left-4 top-0 bottom-0 w-px bg-border hidden md:block" />
@@ -192,23 +171,15 @@ const Memories = () => {
               <div className="absolute left-2.5 top-4 h-3 w-3 rounded-full bg-primary hidden md:block" />
               <div className="rounded-xl border border-border bg-card p-4">
                 <div className="flex items-start justify-between mb-2">
-                  <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                    {memory.category}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(memory.created_at).toLocaleDateString()}
-                  </span>
+                  <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{memory.category}</span>
+                  <span className="text-xs text-muted-foreground">{new Date(memory.created_at).toLocaleDateString()}</span>
                 </div>
                 <p className="text-sm text-foreground">{memory.content}</p>
                 {memory.tags && memory.tags.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {memory.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground"
-                      >
-                        <Tag className="h-3 w-3" />
-                        {tag}
+                      <span key={tag} className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        <Tag className="h-3 w-3" />{tag}
                       </span>
                     ))}
                   </div>

@@ -74,10 +74,13 @@ export type Database = {
       decisions: {
         Row: {
           ai_recommendation: string | null
+          cons: Json | null
           created_at: string
           description: string | null
           id: string
           options: Json | null
+          pros: Json | null
+          risk_score: number | null
           status: string
           title: string
           updated_at: string
@@ -85,10 +88,13 @@ export type Database = {
         }
         Insert: {
           ai_recommendation?: string | null
+          cons?: Json | null
           created_at?: string
           description?: string | null
           id?: string
           options?: Json | null
+          pros?: Json | null
+          risk_score?: number | null
           status?: string
           title: string
           updated_at?: string
@@ -96,10 +102,13 @@ export type Database = {
         }
         Update: {
           ai_recommendation?: string | null
+          cons?: Json | null
           created_at?: string
           description?: string | null
           id?: string
           options?: Json | null
+          pros?: Json | null
+          risk_score?: number | null
           status?: string
           title?: string
           updated_at?: string
@@ -141,6 +150,7 @@ export type Database = {
       }
       habits: {
         Row: {
+          category: string | null
           created_at: string
           frequency: string
           id: string
@@ -150,6 +160,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          category?: string | null
           created_at?: string
           frequency?: string
           id?: string
@@ -159,6 +170,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          category?: string | null
           created_at?: string
           frequency?: string
           id?: string
