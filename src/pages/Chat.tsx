@@ -116,7 +116,7 @@ const Chat = () => {
       .single();
 
     if (savedMsg) {
-      setMessages((prev) => [...prev, savedMsg]);
+      setMessages((prev) => [...prev, { ...savedMsg, role: savedMsg.role as "user" | "assistant" }]);
     }
 
     setIsLoading(true);
