@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Send, Loader2, Plus, Scale } from "lucide-react";
@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/states";
 import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
+
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
 
 interface Message {
   id: string;
@@ -24,8 +26,13 @@ type ChatMode = "general" | "decision";
 
 const DECISION_SYSTEM_PROMPT = "You are in Decision Mode. Help the user think through decisions systematically. For each decision, identify options, list pros and cons, assess risks (1-10), and provide a clear recommendation. Use structured markdown with headers and bullet points.";
 
+const FALLBACK_RESPONSES = [
+  "I'm temporarily unable to connect to AI services. Please try again in a moment.",
+  "The AI service is currently unavailable. Your message has been saved and you can retry shortly.",
+];
+
 const Chat = () => {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { toast } = useToast();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
@@ -83,6 +90,60 @@ const Chat = () => {
     }
   };
 
+  const streamChat = useCallback(async (
+    allMessages: { role: string; content: string }[],
+    onDelta: (chunk: string) => void,
+    onDone: () => void,
+  ) => {
+    const token = session?.access_token;
+    const resp = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+      },
+      body: JSON.stringify({ messages: allMessages, stream: true }),
+    });
+
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.error || `Request failed (${resp.status})`);
+    }
+
+    if (!resp.body) throw new Error("No response body");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let textBuffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      textBuffer += decoder.decode(value, { stream: true });
+
+      let newlineIndex: number;
+      while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+        let line = textBuffer.slice(0, newlineIndex);
+        textBuffer = textBuffer.slice(newlineIndex + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line.startsWith(":") || line.trim() === "") continue;
+        if (!line.startsWith("data: ")) continue;
+        const jsonStr = line.slice(6).trim();
+        if (jsonStr === "[DONE]") { onDone(); return; }
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) onDelta(content);
+        } catch {
+          textBuffer = line + "\n" + textBuffer;
+          break;
+        }
+      }
+    }
+    onDone();
+  }, [session]);
+
   const sendMessage = async () => {
     if (!input.trim() || !user || isLoading) return;
 
@@ -119,30 +180,57 @@ const Chat = () => {
       const allMessages = [...messages, { role: "user" as const, content: userMessage }];
       const bodyMessages = allMessages.map((m) => ({ role: m.role, content: m.content }));
 
-      // Prepend decision mode context if active
       if (chatMode === "decision") {
         bodyMessages.unshift({ role: "user", content: `[DECISION MODE ACTIVE] ${DECISION_SYSTEM_PROMPT}` });
       }
 
-      const { data: aiData, error: aiError } = await supabase.functions.invoke("chat", {
-        body: { messages: bodyMessages },
-      });
+      let assistantContent = "";
+      const tempId = crypto.randomUUID();
 
-      if (aiError) throw aiError;
+      await streamChat(
+        bodyMessages,
+        (chunk) => {
+          assistantContent += chunk;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.id === tempId) {
+              return prev.map((m) => m.id === tempId ? { ...m, content: assistantContent } : m);
+            }
+            return [...prev, { id: tempId, role: "assistant" as const, content: assistantContent, created_at: new Date().toISOString() }];
+          });
+        },
+        () => {},
+      );
 
-      const aiContent = aiData?.choices?.[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
+      // Save final assistant message to DB
+      if (assistantContent) {
+        const { data: aiMsg } = await supabase
+          .from("messages")
+          .insert({ conversation_id: convId, user_id: user.id, role: "assistant", content: assistantContent })
+          .select()
+          .single();
 
-      const { data: aiMsg } = await supabase
-        .from("messages")
-        .insert({ conversation_id: convId, user_id: user.id, role: "assistant", content: aiContent })
-        .select()
-        .single();
-
-      if (aiMsg) {
-        setMessages((prev) => [...prev, { ...aiMsg, role: aiMsg.role as "user" | "assistant" }]);
+        if (aiMsg) {
+          setMessages((prev) => prev.map((m) => m.id === tempId ? { ...aiMsg, role: aiMsg.role as "user" | "assistant" } : m));
+        }
       }
     } catch (error: any) {
-      toast({ variant: "destructive", title: "AI Error", description: error.message || "Failed to get AI response" });
+      // Graceful AI fallback
+      const fallbackMsg = FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
+      toast({
+        variant: "destructive",
+        title: "AI Unavailable",
+        description: error.message || fallbackMsg,
+      });
+
+      // Add fallback message in chat
+      const fallbackId = crypto.randomUUID();
+      setMessages((prev) => [...prev, {
+        id: fallbackId,
+        role: "assistant" as const,
+        content: `⚠️ ${fallbackMsg}`,
+        created_at: new Date().toISOString(),
+      }]);
     } finally {
       setIsLoading(false);
     }
@@ -175,7 +263,7 @@ const Chat = () => {
 
       {/* Chat area */}
       <div className="flex flex-1 flex-col">
-        {/* Mode toggle bar */}
+        {/* Mode toggle */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-2">
           <button
             onClick={() => setChatMode("general")}
@@ -223,7 +311,7 @@ const Chat = () => {
               </div>
             </div>
           ))}
-          {isLoading && (
+          {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
             <div className="flex justify-start">
               <div className="bg-card border border-border rounded-2xl px-4 py-2.5">
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
@@ -240,6 +328,7 @@ const Chat = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={chatMode === "decision" ? "Describe your decision..." : "Type a message..."}
+              maxLength={10000}
               className="flex-1 rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
             />
             <Button type="submit" variant="hero" size="icon" disabled={!input.trim() || isLoading} className="rounded-xl">
